@@ -1,74 +1,50 @@
-// pages/api/humanize-text.js
-// Humanizing text using Gemini Flash 2.5 + Offline fallback
-
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end();
-  const { text } = req.body || {};
-  if (!text) return res.status(400).json({ error: "No text provided" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "POST only" });
+  }
 
-  const key = process.env.GEMINI_API_KEY;
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: "Missing text" });
 
-  // ---------------------------
-  // LOCAL HUMANIZE FALLBACK
-  // ---------------------------
-  const fallbackHumanize = (t) => {
-    let out = t;
+  const apiKey = process.env.GEMINI_API_KEY;
 
-    const replacements = [
-      [/therefore/gi, "so"],
-      [/thus/gi, "so"],
-      [/in conclusion/gi, "to sum up"],
-      [/moreover/gi, "also"],
-      [/furthermore/gi, "also"],
-    ];
-    replacements.forEach(([regex, rep]) => (out = out.replace(regex, rep)));
-
-    out = out.replace(/\s+/g, " ").trim();
-
-    return {
-      humanized: out,
-      fallback: true,
-      note: "Gemini unavailable — offline rewrite used",
-    };
-  };
-
-  // If no key → fallback
-  if (!key) return res.json(fallbackHumanize(text));
-
-  // ---------------------------
-  // GEMINI FLASH 2.5 CALL
-  // ---------------------------
   try {
-    const resp = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
-        key,
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text:
-                    "Rewrite the following text in a natural, human, simple tone. Return only the rewritten text:\n\n" +
-                    text,
-                },
-              ],
-            },
-          ],
-        }),
+          contents: [{
+            parts: [{
+              text: `Rewrite the following text to sound fully human, natural, less structured, non-AI, with emotion and imperfections. Keep the meaning the same:\n\n${text}`
+            }]
+          }]
+        })
       }
     );
 
-    const data = await resp.json();
-    const output =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+    const raw = await response.text();
 
-    if (!output) throw new Error("Gemini error");
+    let json;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      return res.status(200).json({
+        cleanedText: null,
+        note: "Gemini returned non-JSON",
+        providerRaw: raw
+      });
+    }
 
-    return res.json({ humanized: output });
+    const output = json.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+    return res.status(200).json({
+      cleanedText: output,
+      providerRaw: json
+    });
+
   } catch (err) {
-    return res.json(fallbackHumanize(text));
+    return res.status(500).json({ error: err.message });
   }
 }
