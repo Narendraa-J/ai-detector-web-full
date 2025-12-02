@@ -24,23 +24,33 @@ export default function Home() {
   });
   const [resumeUrl, setResumeUrl] = useState(null);
 
-  async function detectText() {
-    setLoading(true);
-    setTextReport(null);
+async function detectText() {
+  const txt = textInput.trim();
+  if (!txt) return alert("Enter text first");
+  setLoading(true);
+  setTextReport("");
+  try {
+    const resp = await fetch("/api/detect-text", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: txt })
+    });
+
+    const raw = await resp.text();
     try {
-      const resp = await fetch("/api/detect-text", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: textInput }),
-      });
-      const json = await resp.json();
-      setTextReport(json);
-    } catch (e) {
-      setTextReport({ error: e.message });
-    } finally {
-      setLoading(false);
+      const json = JSON.parse(raw);
+      setTextReport(JSON.stringify(json, null, 2));
+    } catch {
+      console.warn("Non-JSON from detect-text:", raw);
+      setTextReport(raw);
+      alert("Detect-Text returned non-JSON. Open console for details.");
     }
+  } catch (err) {
+    alert("Detect failed: " + (err.message || err));
   }
+  setLoading(false);
+}
+
 
   async function humanizeText() {
     setLoading(true);
@@ -66,39 +76,82 @@ export default function Home() {
     setDeaiUrl(null);
   }
 
-  async function detectImage() {
-    if (!imageFile) return alert("Upload an image first");
-    setLoading(true);
-    try {
-      const f = new FormData();
-      f.append("file", imageFile);
-      const resp = await fetch("/api/detect-image", { method: "POST", body: f });
-      const json = await resp.json();
-      setImageReport(json);
-    } catch (e) {
-      setImageReport({ error: e.message });
-    } finally {
-      setLoading(false);
-    }
-  }
+async function detectImage() {
+  if (!imageFile) return alert("Upload an image first");
+  setLoading(true);
+  setImageReport("");
+  try {
+    const f = new FormData();
+    f.append("file", imageFile);
 
-  async function deAiImage() {
-    if (!imageFile) return alert("Upload an image first");
-    setLoading(true);
-    setDeaiUrl(null);
+    const resp = await fetch("/api/detect-image", {
+      method: "POST",
+      body: f
+    });
+
+    const raw = await resp.text();
+
     try {
-      const f = new FormData();
-      f.append("file", imageFile);
-      f.append("mode", "photo-realistic");
-      const resp = await fetch("/api/deai-image", { method: "POST", body: f });
-      const json = await resp.json();
-      setDeaiUrl(json.url || null);
-    } catch (e) {
-      alert("De-AI failed: " + e.message);
-    } finally {
-      setLoading(false);
+      const json = JSON.parse(raw);
+      setImageReport(JSON.stringify(json, null, 2));
+    } catch {
+      console.warn("Non-JSON from detect-image:", raw);
+      setImageReport(raw);
+      alert("Detect Image returned non-JSON. See console.");
     }
+  } catch (err) {
+    alert("Detect image failed: " + (err.message || err));
   }
+  setLoading(false);
+}
+
+
+async function deAiImage() {
+  if (!imageFile) return alert("Upload an image first");
+  setLoading(true);
+  setDeaiUrl(null);
+  try {
+    const f = new FormData();
+    f.append("file", imageFile);
+    f.append("mode", "photo-realistic");
+
+    const resp = await fetch("/api/deai-image", { method: "POST", body: f });
+
+    // read plain text first (prevents JSON.parse crash)
+    const text = await resp.text();
+
+    // If server returned non-JSON (error or provider raw) show it:
+    try {
+      const json = text ? JSON.parse(text) : null;
+      // Normal path: server returned JSON
+      if (json?.url) {
+        setDeaiUrl(json.url);
+      } else if (json?.providerRaw) {
+        // providerRaw often contains provider reply; show that (and saved url)
+        setDeaiUrl(json.url || null);
+        alert("De-AI result included provider response. See console for details.");
+        console.log("providerRaw:", json.providerRaw);
+      } else if (json?.note) {
+        setDeaiUrl(json.url || null);
+        alert("De-AI note: " + json.note);
+        console.log("server json:", json);
+      } else {
+        // generic successful JSON but no url
+        console.log("deai JSON:", json);
+        alert("De-AI returned JSON. Check console for details.");
+      }
+    } catch (parseErr) {
+      // server returned non-JSON text — show it safely
+      console.warn("Non-JSON response from /api/deai-image:", text);
+      alert("De-AI failed: provider returned non-JSON response. See console (Ctrl+Shift+I) for provider output.");
+      console.log("Raw response from /api/deai-image:\n", text);
+    }
+  } catch (e) {
+    alert("De-AI failed: " + (e.message || e));
+  } finally {
+    setLoading(false);
+  }
+}
 
   function onDocChange(e) {
     setDocFile(e.target.files?.[0] || null);
