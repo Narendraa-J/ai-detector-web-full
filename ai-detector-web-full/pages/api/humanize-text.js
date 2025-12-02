@@ -1,41 +1,74 @@
 // pages/api/humanize-text.js
+// Humanizing text using Gemini Flash 2.5 + Offline fallback
+
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).end();
+  if (req.method !== "POST") return res.status(405).end();
   const { text } = req.body || {};
-  if (!text) return res.status(400).json({ error: 'No text' });
+  if (!text) return res.status(400).json({ error: "No text provided" });
 
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) {
-    // naive local fallback: make shorter and friendlier
-    const humanized = text.replace(/\b(Therefore|Thus|In conclusion)\b/g, 'So').slice(0, 1200);
-    return res.json({ humanized, fallback: true, note: 'No OPENAI_API_KEY — local rewrite used' });
-  }
+  const key = process.env.GEMINI_API_KEY;
 
+  // ---------------------------
+  // LOCAL HUMANIZE FALLBACK
+  // ---------------------------
+  const fallbackHumanize = (t) => {
+    let out = t;
+
+    const replacements = [
+      [/therefore/gi, "so"],
+      [/thus/gi, "so"],
+      [/in conclusion/gi, "to sum up"],
+      [/moreover/gi, "also"],
+      [/furthermore/gi, "also"],
+    ];
+    replacements.forEach(([regex, rep]) => (out = out.replace(regex, rep)));
+
+    out = out.replace(/\s+/g, " ").trim();
+
+    return {
+      humanized: out,
+      fallback: true,
+      note: "Gemini unavailable — offline rewrite used",
+    };
+  };
+
+  // If no key → fallback
+  if (!key) return res.json(fallbackHumanize(text));
+
+  // ---------------------------
+  // GEMINI FLASH 2.5 CALL
+  // ---------------------------
   try {
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: 'Rewrite text to sound natural, human, and conversational. Preserve meaning.' },
-          { role: 'user', content: text }
-        ],
-        max_tokens: 1000,
-        temperature: 0.7
-      })
-    });
+    const resp = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" +
+        key,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text:
+                    "Rewrite the following text in a natural, human, simple tone. Return only the rewritten text:\n\n" +
+                    text,
+                },
+              ],
+            },
+          ],
+        }),
+      }
+    );
+
     const data = await resp.json();
-    if (data.error) throw data.error;
-    const output = data.choices?.[0]?.message?.content || '';
-    res.json({ humanized: output, raw: data });
+    const output =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+
+    if (!output) throw new Error("Gemini error");
+
+    return res.json({ humanized: output });
   } catch (err) {
-    const code = err?.code || err?.type || '';
-    if (code === 'insufficient_quota' || (err?.message || '').toLowerCase().includes('quota')) {
-      // local fallback rewrite
-      const humanized = text.replace(/\b(Therefore|Thus|In conclusion)\b/g, 'So').slice(0, 1200);
-      return res.json({ humanized, fallback: true, note: 'OpenAI quota exceeded — used local fallback rewrite.' });
-    }
-    return res.status(500).json({ error: err?.message || 'OpenAI error', raw: err });
+    return res.json(fallbackHumanize(text));
   }
 }
