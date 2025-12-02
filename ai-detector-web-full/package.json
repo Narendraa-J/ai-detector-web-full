@@ -1,0 +1,17 @@
+{
+  "name": "ai-detector-web",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "13.5.8",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "formidable": "^3.5.0"
+  }
+}
