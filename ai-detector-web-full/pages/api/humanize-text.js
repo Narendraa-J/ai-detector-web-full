@@ -1,4 +1,4 @@
-// Humanize text by asking OpenAI to rewrite it to sound more natural and human.
+// pages/api/humanize-text.js
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
   const { text } = req.body || {};
@@ -6,31 +6,36 @@ export default async function handler(req, res) {
 
   const key = process.env.OPENAI_API_KEY;
   if (!key) {
-    // naive fallback
-    const humanized = text.replace(/\b(Therefore|Thus|In conclusion)\b/g, 'So');
-    return res.json({ humanized, note: 'No OPENAI_API_KEY: used local fallback' });
+    // naive local fallback: make shorter and friendlier
+    const humanized = text.replace(/\b(Therefore|Thus|In conclusion)\b/g, 'So').slice(0, 1200);
+    return res.json({ humanized, fallback: true, note: 'No OPENAI_API_KEY — local rewrite used' });
   }
 
   try {
-    const system = "You are a helpful assistant that rewrites text to sound natural, human, and less formulaic. Preserve meaning and shorten where appropriate.";
-    const user = `Rewrite the following text to sound more human and natural. Keep the meaning intact and do not add facts.\n\n---\n${text}\n---`;
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + key
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+        messages: [
+          { role: 'system', content: 'Rewrite text to sound natural, human, and conversational. Preserve meaning.' },
+          { role: 'user', content: text }
+        ],
         max_tokens: 1000,
         temperature: 0.7
       })
     });
     const data = await resp.json();
+    if (data.error) throw data.error;
     const output = data.choices?.[0]?.message?.content || '';
     res.json({ humanized: output, raw: data });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+  } catch (err) {
+    const code = err?.code || err?.type || '';
+    if (code === 'insufficient_quota' || (err?.message || '').toLowerCase().includes('quota')) {
+      // local fallback rewrite
+      const humanized = text.replace(/\b(Therefore|Thus|In conclusion)\b/g, 'So').slice(0, 1200);
+      return res.json({ humanized, fallback: true, note: 'OpenAI quota exceeded — used local fallback rewrite.' });
+    }
+    return res.status(500).json({ error: err?.message || 'OpenAI error', raw: err });
   }
 }
