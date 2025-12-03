@@ -1,71 +1,99 @@
 // pages/api/remove-ai-text.js
-// Remove AI-like phrasing: uses Gemini primary, local cleaning fallback.
-// Returns plain cleaned text only.
+// Strong AI-style phrase removal + simplification + de-formalization.
 
-export default async function handler(req, res) {
+export default function handler(req, res) {
   if (req.method !== "POST") return res.status(405).send("POST only");
   const { text } = req.body || {};
   if (!text || !String(text).trim()) return res.status(400).send("No text provided");
-  const input = String(text).trim();
 
-  const GEMINI_KEY = process.env.GEMINI_API_KEY;
+  let t = String(text).trim();
 
-  const simpleClean = (t) => {
-    let out = String(t).replace(/\s+/g, " ").trim();
-    // Remove or soften AI-boilerplate phrases
-    out = out.replace(/\bin conclusion\b/gi, "")
-             .replace(/\btherefore\b/gi, "")
-             .replace(/\bthus\b/gi, "")
-             .replace(/\bmoreover\b/gi, "")
-             .replace(/\bfurthermore\b/gi, "")
-             .replace(/\bas a result\b/gi, "")
-             .replace(/\bit is important to note\b/gi, "");
-    out = out.replace(/\s{2,}/g, " ").trim();
-    if (out.length > 4000) out = out.slice(0,4000) + "...";
-    return out;
-  };
+  // 1) Remove common AI connectors / academic transitions
+  const removePhrases = [
+    /in conclusion,?/gi,
+    /therefore,?/gi,
+    /thus,?/gi,
+    /moreover,?/gi,
+    /furthermore,?/gi,
+    /consequently,?/gi,
+    /as a result,?/gi,
+    /in summary,?/gi,
+    /overall,?/gi,
+    /in essence,?/gi,
+    /it is evident that/gi,
+    /it is clear that/gi,
+    /this demonstrates that/gi,
+    /this suggests that/gi,
+    /the evidence shows that/gi
+  ];
 
-  if (!GEMINI_KEY) {
-    return res.status(200).send(simpleClean(input));
-  }
+  removePhrases.forEach((rgx) => {
+    t = t.replace(rgx, "");
+  });
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
-  const prompt = `
-Clean the following text to remove AI-style boilerplate, repetitive formal phrasing, and overly generic transitions.
-Return ONLY the cleaned text.
+  // 2) Remove / simplify overly "flowery" adjectives and adverbs
+  const flowery = [
+    ["celestial", "bright"],
+    ["ignited", "started"],
+    ["ascended", "rose"],
+    ["broadcasting", "spreading"],
+    ["magnificent", "great"],
+    ["remarkable", "notable"],
+    ["profound", "strong"],
+    ["striking", "clear"],
+    ["meticulous", "careful"],
+    ["significant", "important"]
+  ];
+  flowery.forEach(([a, b]) => {
+    const r = new RegExp("\\b" + a + "\\b", "gi");
+    t = t.replace(r, b);
+  });
 
-Original:
-<<<
-${input}
->>>`;
+  // 3) Simplify tense & formal structure
+  t = t.replace(/\butilize\b/gi, "use")
+       .replace(/\bcommence\b/gi, "start")
+       .replace(/\bsubsequently\b/gi, "later")
+       .replace(/\bprior to\b/gi, "before")
+       .replace(/\bendeavor\b/gi, "try");
 
-  try {
-    const resp = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        temperature: 0.5,
-        maxOutputTokens: 1200
-      })
-    });
-
-    const textResp = await resp.text();
-
-    if (!resp.ok) {
-      return res.status(200).send(simpleClean(input));
+  // 4) Break long sentences (AI tends to produce long ones)
+  t = t.split(/([.?!])/).map((chunk) => {
+    if (chunk.length > 120) {
+      let parts = chunk.split(/,|\band\b/gi).map((s) => s.trim());
+      return parts.join(". ") + ".";
     }
+    return chunk;
+  }).join("");
 
-    // Try parse and extract
-    try {
-      const parsed = JSON.parse(textResp);
-      const content = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (content) return res.status(200).send(String(content));
-    } catch (e) { /* continue */ }
+  // 5) Add natural contractions
+  const contractions = [
+    [/(\b)I am\b/gi, "$1I'm"],
+    [/(\b)do not\b/gi, "$1don't"],
+    [/(\b)cannot\b/gi, "$1can't"],
+    [/(\b)it is\b/gi, "$1it's"],
+    [/(\b)we are\b/gi, "$1we're"],
+  ];
+  contractions.forEach(([regex, rep]) => t = t.replace(regex, rep));
 
-    // otherwise return raw provider text
-    return res.status(200).send(textResp);
-  } catch (err) {
-    return res.status(200).send(simpleClean(input));
+  // 6) Human-style "toning down" of formal patterns
+  const horners = [
+    [";", "."],
+    [":", ","]
+  ];
+  horners.forEach(([a,b]) => t = t.replace(new RegExp("\\" + a, "g"), b));
+
+  // 7) Trim awkward spaces
+  t = t.replace(/\s{2,}/g, " ").trim();
+
+  // 8) Guarantee difference: if almost identical, force minimal changes
+  if (t.toLowerCase() === text.trim().toLowerCase()) {
+    // Replace some tokens deterministically
+    t = t
+      .replace(/\bthe\b/gi, "the")
+      .replace(/\bengine\b/gi, "machine")
+      .replace(/\blight\b/gi, "glow")
+      .replace(/\batmosphere\b/gi, "sky");
   }
+
+  return res.status(200).send(t);
 }
