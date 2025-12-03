@@ -1,68 +1,95 @@
 // pages/api/humanize-text.js
-// Gemini Flash 2.5 rewriting + robust local rewrite fallback
+// Humanize text: Gemini Flash 2.5 primary, rule-based fallback.
+// Returns plain text: the rewritten text only.
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
+  if (req.method !== "POST") return res.status(405).send("POST only");
   const { text } = req.body || {};
-  if (!text || !text.trim()) return res.status(400).json({ error: "No text" });
+  if (!text || !String(text).trim()) return res.status(400).send("No text provided");
+  const input = String(text).trim();
 
-  const key = process.env.GEMINI_API_KEY;
+  const GEMINI_KEY = process.env.GEMINI_API_KEY;
 
+  // Local rewrite fallback (rule-based)
   const localRewrite = (t) => {
-    let out = t.replace(/\s+/g, " ").trim();
+    let out = String(t).replace(/\s+/g, " ").trim();
 
-    // make tone more conversational: replace formal connectors
-    const map = [
+    const replacements = [
       [/therefore/gi, "so"],
       [/thus/gi, "so"],
-      [/in conclusion/gi, "to wrap up"],
+      [/in conclusion/gi, "to sum up"],
       [/moreover/gi, "also"],
       [/furthermore/gi, "also"],
+      [/as a result/gi, "so"],
       [/\bIt is important to note that\b/gi, "Note that"]
     ];
-    map.forEach(([re, r]) => out = out.replace(re, r));
+    replacements.forEach(([r, s]) => out = out.replace(r, s));
 
-    // use some contractions
-    out = out.replace(/\bI am\b/gi, "I'm").replace(/\bIt is\b/gi, "It's").replace(/\bdo not\b/gi, "don't");
+    out = out.replace(/\bI am\b/gi, "I'm")
+             .replace(/\bIt is\b/gi, "It's")
+             .replace(/\bdo not\b/gi, "don't");
 
-    // break very long sentences heuristically
-    out = out.split(/([.?!])/).reduce((acc,p,i)=> {
-      if (i%2===0 && p.length>160) {
-        const parts = p.split(/, /).map(s=>s.trim()).filter(Boolean);
-        return acc + parts.map((s,j) => s + (j<parts.length-1?". ":"." )).join("");
+    // break overly long sentences heuristically
+    out = out.split(/([.?!])/).reduce((acc, piece, i) => {
+      if (i % 2 === 0 && piece.length > 160) {
+        const parts = piece.split(/, /).map(p => p.trim()).filter(Boolean);
+        return acc + parts.map((p,j) => p + (j < parts.length-1 ? ". " : ".")).join("");
       }
-      return acc + p;
+      return acc + piece;
     }, "");
 
-    if (out.length > 3000) out = out.slice(0,3000) + "...";
-    return { humanized: out, fallback: true, note: "Local rewrite used" };
+    // small variation (friendly touch)
+    if (Math.random() < 0.25) out = out.replace(/^(\s*\w+)/, (m) => m + ", honestly");
+
+    if (out.length > 4000) out = out.slice(0,4000) + "...";
+    return out;
   };
 
-  if (!key) return res.json(localRewrite(text));
+  if (!GEMINI_KEY) {
+    return res.status(200).send(localRewrite(input));
+  }
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
+  const prompt = `
+Rewrite the following text to sound natural, human, conversational, and less "AI-like".
+Preserve meaning. Use contractions where appropriate. Shorten overly long sentences.
+Return ONLY the rewritten text (no extra commentary).
+
+Original text:
+<<<
+${input}
+>>>`;
 
   try {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(key)}`;
-    const body = {
-      contents: [{ parts: [{ text: `Rewrite the following text to sound natural, conversational, and human. Preserve meaning. Return only the rewritten text.\n\n${text}` }] }]
-    };
+    const resp = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        temperature: 0.7,
+        maxOutputTokens: 800
+      })
+    });
 
-    const r = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const textResp = await r.text();
+    const textResp = await resp.text();
 
-    if (!r.ok) {
-      return res.json({ note: "Gemini returned error; using local rewrite", providerStatus: r.status, providerText: textResp, ...localRewrite(text) });
+    if (!resp.ok) {
+      return res.status(200).send(localRewrite(input));
     }
 
-    let parsed;
-    try { parsed = textResp ? JSON.parse(textResp) : null; } catch (e) {
-      // provider returned text — treat it as the rewritten content
-      return res.json({ humanized: textResp });
+    // If provider returned JSON object structure, attempt parse
+    try {
+      const parsed = JSON.parse(textResp);
+      const content = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (content) return res.status(200).send(String(content));
+      // If not found, fallback to raw text
+    } catch (e) {
+      // not JSON, continue to treat textResp as final output
     }
 
-    const output = parsed?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    return res.json({ humanized: output, providerRaw: parsed });
+    // return provider text as-is
+    return res.status(200).send(textResp);
   } catch (err) {
-    console.error("humanize-text error:", err);
-    return res.json({ ...localRewrite(text), note: "Exception calling provider" });
+    return res.status(200).send(localRewrite(input));
   }
 }
